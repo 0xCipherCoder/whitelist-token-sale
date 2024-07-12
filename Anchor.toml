@@ -11,7 +11,7 @@ whitelist_token_sale = "5934bLZcGo282mPdMsESW2ejUzCMTu7u6FDzupjzjgNs"
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Localnet"
+cluster = "localnet"
 wallet = "/home/pradip/.config/solana/id.json"
 
 [scripts]
