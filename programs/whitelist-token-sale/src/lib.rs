@@ -20,6 +20,20 @@ pub mod whitelist_token_sale {
         sale.price = price;
         sale.max_tokens_per_wallet = max_tokens_per_wallet;
         sale.whitelist = whitelist;
+
+        // Set the token vault's authority to the sale account
+        let cpi_accounts = anchor_spl::token::SetAuthority {
+            account_or_mint: ctx.accounts.token_vault.to_account_info(),
+            current_authority: ctx.accounts.authority.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        anchor_spl::token::set_authority(
+            cpi_ctx,
+            anchor_spl::token::spl_token::instruction::AuthorityType::AccountOwner,
+            Some(ctx.accounts.sale.key()),
+        )?;
+
         Ok(())
     }
 
@@ -55,7 +69,7 @@ pub mod whitelist_token_sale {
         // Transfer tokens from vault to buyer
         let seeds = &[b"sale".as_ref(), &[ctx.bumps.sale]];
         let signer = &[&seeds[..]];
-        
+
         let cpi_accounts = Transfer {
             from: ctx.accounts.token_vault.to_account_info(),
             to: ctx.accounts.buyer_token_account.to_account_info(),

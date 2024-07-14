@@ -31,7 +31,7 @@ describe("whitelist-token-sale", () => {
     await provider.connection.confirmTransaction(airdropAuthority);
     await provider.connection.confirmTransaction(airdropBuyer);
 
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     tokenMint = await createMint(
       provider.connection,
@@ -121,7 +121,7 @@ describe("whitelist-token-sale", () => {
     const buyerBalanceAfter = await provider.connection.getBalance(buyer.publicKey);
     const buyerTokenBalanceAfter = (await provider.connection.getTokenAccountBalance(buyerTokenAccount)).value.amount;
 
-    expect(buyerBalanceBefore - buyerBalanceAfter).to.be.closeTo(price.toNumber() * amount.toNumber(), 10000);
+    expect(buyerBalanceBefore - buyerBalanceAfter).to.equal(price.toNumber() * amount.toNumber());
     expect(Number(buyerTokenBalanceAfter) - Number(buyerTokenBalanceBefore)).to.equal(amount.toNumber());
   });
 
@@ -134,7 +134,7 @@ describe("whitelist-token-sale", () => {
     );
     await provider.connection.confirmTransaction(airdropTx);
   
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    await new Promise(resolve => setTimeout(resolve, 500));
   
     const nonWhitelistedBuyerTokenAccount = await getOrCreateAssociatedTokenAccount(
       provider.connection,
