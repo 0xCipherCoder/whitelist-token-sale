@@ -1,10 +1,10 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Token, TokenAccount, Mint, Transfer};
 
-declare_id!("5934bLZcGo282mPdMsESW2ejUzCMTu7u6FDzupjzjgNs");
+declare_id!("HcPYAwb9y87YpJPs3BTgc8yMzD2cqecJmNZnqapmt4fh");
 
 #[program]
-pub mod whitelist_sale {
+pub mod whitelist_token_sale {
     use super::*;
 
     pub fn initialize(
@@ -25,7 +25,7 @@ pub mod whitelist_sale {
 
     pub fn buy_tokens(ctx: Context<BuyTokens>, amount: u64) -> Result<()> {
         let sale = &ctx.accounts.sale;
-        
+
         // Check if buyer is whitelisted
         require!(
             sale.whitelist.contains(&ctx.accounts.buyer.key()),
@@ -53,13 +53,16 @@ pub mod whitelist_sale {
         anchor_lang::system_program::transfer(cpi_ctx, total_price)?;
 
         // Transfer tokens from vault to buyer
+        let seeds = &[b"sale".as_ref(), &[ctx.bumps.sale]];
+        let signer = &[&seeds[..]];
+        
         let cpi_accounts = Transfer {
             from: ctx.accounts.token_vault.to_account_info(),
             to: ctx.accounts.buyer_token_account.to_account_info(),
             authority: ctx.accounts.sale.to_account_info(),
         };
         let cpi_program = ctx.accounts.token_program.to_account_info();
-        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signer);
         token::transfer(cpi_ctx, amount)?;
 
         Ok(())
@@ -68,7 +71,13 @@ pub mod whitelist_sale {
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
-    #[account(init, payer = authority, space = 8 + 32 + 32 + 32 + 8 + 8 + 32 * 100)]
+    #[account(
+        init,
+        payer = authority,
+        space = 8 + 32 + 32 + 32 + 8 + 8 + 32 * 100,
+        seeds = [b"sale"],
+        bump
+    )]
     pub sale: Account<'info, Sale>,
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -82,11 +91,17 @@ pub struct Initialize<'info> {
 
 #[derive(Accounts)]
 pub struct BuyTokens<'info> {
-    #[account(mut)]
+    #[account(
+        mut,
+        seeds = [b"sale"],
+        bump,
+        has_one = authority,
+        has_one = token_vault,
+    )]
     pub sale: Account<'info, Sale>,
     #[account(mut)]
     pub buyer: Signer<'info>,
-    /// CHECK: This is the authority account that receives the payment. We don't need to check it here as its valididity is enforced by the program logic.
+    /// CHECK: This is the authority account that receives the payment.
     #[account(mut)]
     pub authority: AccountInfo<'info>,
     #[account(mut)]

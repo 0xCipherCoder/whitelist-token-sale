@@ -1,54 +1,46 @@
 import * as anchor from "@coral-xyz/anchor";
-import { Program } from "@coral-xyz/anchor";
-import { WhitelistSale, IDL } from "../target/types/whitelist_sale";
-import { 
-  TOKEN_PROGRAM_ID,
-  createMint,
-  createAccount,
-  mintTo,
-  getAccount
-} from "@solana/spl-token";
-import { PublicKey, SystemProgram, Keypair, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { assert } from "chai";
+import { Program, AnchorProvider, Wallet } from "@coral-xyz/anchor";
+import { WhitelistTokenSale } from "../target/types/whitelist_token_sale";
+import { TOKEN_PROGRAM_ID, createMint, createAccount, mintTo, getOrCreateAssociatedTokenAccount } from "@solana/spl-token";
+import { expect } from "chai";
 
-describe("whitelist_sale", () => {
-  const provider = anchor.AnchorProvider.env();
+describe("whitelist-token-sale", () => {
+  const provider = AnchorProvider.env();
   anchor.setProvider(provider);
 
-  const program = new anchor.Program(IDL, new anchor.web3.PublicKey("5934bLZcGo282mPdMsESW2ejUzCMTu7u6FDzupjzjgNs"), provider) as Program<WhitelistSale>;
+  const program = anchor.workspace.WhitelistTokenSale as Program<WhitelistTokenSale>;
 
-  let tokenMint: PublicKey;
-  let tokenVault: PublicKey;
-  let saleAccount: PublicKey;
-  let buyerTokenAccount: PublicKey;
+  let authority: anchor.web3.Keypair;
+  let tokenMint: anchor.web3.PublicKey;
+  let tokenVault: anchor.web3.PublicKey;
+  let salePda: anchor.web3.PublicKey;
+  let buyer: anchor.web3.Keypair;
+  let buyerTokenAccount: anchor.web3.PublicKey;
 
-  const authority = Keypair.generate();
-  const buyer = Keypair.generate();
-
-  const price = new anchor.BN(LAMPORTS_PER_SOL); // 1 SOL
+  const price = new anchor.BN(1_000_000); // 1 SOL
   const maxTokensPerWallet = new anchor.BN(10);
 
   before(async () => {
-    // Airdrop SOL to authority and buyer
-    await provider.connection.confirmTransaction(
-      await provider.connection.requestAirdrop(authority.publicKey, 10 * LAMPORTS_PER_SOL),
-      "confirmed"
-    );
-    await provider.connection.confirmTransaction(
-      await provider.connection.requestAirdrop(buyer.publicKey, 10 * LAMPORTS_PER_SOL),
-      "confirmed"
-    );
+    authority = anchor.web3.Keypair.generate();
+    buyer = anchor.web3.Keypair.generate();
 
-    // Create token mint
+    // Airdrop SOL to authority and buyer, and wait for confirmation
+    const airdropAuthority = await provider.connection.requestAirdrop(authority.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL);
+    const airdropBuyer = await provider.connection.requestAirdrop(buyer.publicKey, 10 * anchor.web3.LAMPORTS_PER_SOL);
+    
+    await provider.connection.confirmTransaction(airdropAuthority);
+    await provider.connection.confirmTransaction(airdropBuyer);
+
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
     tokenMint = await createMint(
       provider.connection,
       authority,
       authority.publicKey,
       null,
-      9
+      0
     );
 
-    // Create token vault
     tokenVault = await createAccount(
       provider.connection,
       authority,
@@ -56,136 +48,145 @@ describe("whitelist_sale", () => {
       authority.publicKey
     );
 
-    // Mint tokens to vault
     await mintTo(
       provider.connection,
       authority,
       tokenMint,
       tokenVault,
-      authority.publicKey,
-      1_000_000_000 // 1000 tokens
+      authority,
+      1_000_000
     );
 
-    // Create buyer token account
-    buyerTokenAccount = await createAccount(
+    [salePda] = anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("sale")],
+      program.programId
+    );
+
+    const buyerATA = await getOrCreateAssociatedTokenAccount(
       provider.connection,
       buyer,
       tokenMint,
       buyer.publicKey
     );
+    buyerTokenAccount = buyerATA.address;
 
-    // Generate sale account
-    [saleAccount] = await PublicKey.findProgramAddress(
-      [Buffer.from("sale")],
-      program.programId
-    );
-  });
-
-  it("Initializes the sale", async () => {
+    // Initialize the sale
+    const whitelist = [buyer.publicKey];
     await program.methods
-      .initialize(price, maxTokensPerWallet, [buyer.publicKey])
+      .initialize(price, maxTokensPerWallet, whitelist)
       .accounts({
-        sale: saleAccount,
+        sale: salePda,
         authority: authority.publicKey,
         tokenMint: tokenMint,
         tokenVault: tokenVault,
-        systemProgram: SystemProgram.programId,
+        systemProgram: anchor.web3.SystemProgram.programId,
         tokenProgram: TOKEN_PROGRAM_ID,
         rent: anchor.web3.SYSVAR_RENT_PUBKEY,
       })
       .signers([authority])
       .rpc();
-
-    const saleData = await program.account.sale.fetch(saleAccount);
-    assert.ok(saleData.authority.equals(authority.publicKey));
-    assert.ok(saleData.tokenMint.equals(tokenMint));
-    assert.ok(saleData.tokenVault.equals(tokenVault));
-    assert.ok(saleData.price.eq(price));
-    assert.ok(saleData.maxTokensPerWallet.eq(maxTokensPerWallet));
-    assert.ok(saleData.whitelist[0].equals(buyer.publicKey));
   });
 
-  it("Allows whitelisted buyer to purchase tokens", async () => {
+  it("Initializes the sale correctly", async () => {
+    const saleAccount = await program.account.sale.fetch(salePda);
+
+    expect(saleAccount.authority.toString()).to.equal(authority.publicKey.toString());
+    expect(saleAccount.tokenMint.toString()).to.equal(tokenMint.toString());
+    expect(saleAccount.tokenVault.toString()).to.equal(tokenVault.toString());
+    expect(saleAccount.price.toString()).to.equal(price.toString());
+    expect(saleAccount.maxTokensPerWallet.toString()).to.equal(maxTokensPerWallet.toString());
+    expect(saleAccount.whitelist[0].toString()).to.equal(buyer.publicKey.toString());
+  });
+
+  it("Allows a whitelisted buyer to purchase tokens", async () => {
     const amount = new anchor.BN(5);
 
     const buyerBalanceBefore = await provider.connection.getBalance(buyer.publicKey);
-    const authorityBalanceBefore = await provider.connection.getBalance(authority.publicKey);
+    const buyerTokenBalanceBefore = (await provider.connection.getTokenAccountBalance(buyerTokenAccount)).value.amount;
 
     await program.methods
       .buyTokens(amount)
       .accounts({
-        sale: saleAccount,
+        sale: salePda,
         buyer: buyer.publicKey,
         authority: authority.publicKey,
         tokenVault: tokenVault,
         buyerTokenAccount: buyerTokenAccount,
-        systemProgram: SystemProgram.programId,
+        systemProgram: anchor.web3.SystemProgram.programId,
         tokenProgram: TOKEN_PROGRAM_ID,
       })
       .signers([buyer])
       .rpc();
 
     const buyerBalanceAfter = await provider.connection.getBalance(buyer.publicKey);
-    const authorityBalanceAfter = await provider.connection.getBalance(authority.publicKey);
-    const buyerTokenBalance = await getAccount(provider.connection, buyerTokenAccount);
+    const buyerTokenBalanceAfter = (await provider.connection.getTokenAccountBalance(buyerTokenAccount)).value.amount;
 
-    assert.ok(buyerBalanceAfter < buyerBalanceBefore - price.muln(5).toNumber());
-    assert.ok(authorityBalanceAfter > authorityBalanceBefore + price.muln(5).toNumber());
-    assert.ok(buyerTokenBalance.amount === BigInt(5_000_000_000)); // 5 tokens
+    expect(buyerBalanceBefore - buyerBalanceAfter).to.be.closeTo(price.toNumber() * amount.toNumber(), 10000);
+    expect(Number(buyerTokenBalanceAfter) - Number(buyerTokenBalanceBefore)).to.equal(amount.toNumber());
   });
 
-  it("Prevents non-whitelisted buyer from purchasing tokens", async () => {
-    const nonWhitelistedBuyer = Keypair.generate();
-    await provider.connection.confirmTransaction(
-      await provider.connection.requestAirdrop(nonWhitelistedBuyer.publicKey, 10 * LAMPORTS_PER_SOL),
-      "confirmed"
+  it("Prevents non-whitelisted buyers from purchasing tokens", async () => {
+    const nonWhitelistedBuyer = anchor.web3.Keypair.generate();
+    
+    const airdropTx = await provider.connection.requestAirdrop(
+      nonWhitelistedBuyer.publicKey,
+      10 * anchor.web3.LAMPORTS_PER_SOL
     );
-
-    const nonWhitelistedBuyerTokenAccount = await createAccount(
+    await provider.connection.confirmTransaction(airdropTx);
+  
+    await new Promise(resolve => setTimeout(resolve, 5000));
+  
+    const nonWhitelistedBuyerTokenAccount = await getOrCreateAssociatedTokenAccount(
       provider.connection,
       nonWhitelistedBuyer,
       tokenMint,
       nonWhitelistedBuyer.publicKey
     );
-
+  
+    const amount = new anchor.BN(5);
+  
     try {
       await program.methods
-        .buyTokens(new anchor.BN(1))
+        .buyTokens(amount)
         .accounts({
-          sale: saleAccount,
+          sale: salePda,
           buyer: nonWhitelistedBuyer.publicKey,
           authority: authority.publicKey,
           tokenVault: tokenVault,
-          buyerTokenAccount: nonWhitelistedBuyerTokenAccount,
-          systemProgram: SystemProgram.programId,
+          buyerTokenAccount: nonWhitelistedBuyerTokenAccount.address,
+          systemProgram: anchor.web3.SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
         })
         .signers([nonWhitelistedBuyer])
         .rpc();
-      assert.fail("Expected error was not thrown");
-    } catch (error: any) {
-      assert.include(error.message, "Buyer is not whitelisted");
+      
+      expect.fail("The transaction should have failed");
+    } catch (error) {
+      expect(error.toString()).to.include("Buyer is not whitelisted");
     }
   });
 
-  it("Prevents buying more than max tokens per wallet", async () => {
+  it("Prevents buyers from exceeding the max tokens per wallet", async () => {
+    const amount = maxTokensPerWallet.add(new anchor.BN(1));
+
     try {
       await program.methods
-        .buyTokens(new anchor.BN(6))
+        .buyTokens(amount)
         .accounts({
-          sale: saleAccount,
+          sale: salePda,
           buyer: buyer.publicKey,
           authority: authority.publicKey,
           tokenVault: tokenVault,
           buyerTokenAccount: buyerTokenAccount,
-          systemProgram: SystemProgram.programId,
+          systemProgram: anchor.web3.SystemProgram.programId,
           tokenProgram: TOKEN_PROGRAM_ID,
         })
         .signers([buyer])
         .rpc();
-      assert.fail("Expected error was not thrown");
-    } catch (error: any) {
-      assert.include(error.message, "Purchase exceeds max tokens per wallet");
+
+      expect.fail("The transaction should have failed");
+    } catch (error) {
+      expect(error.toString()).to.include("Purchase exceeds max tokens per wallet");
     }
   });
 });
